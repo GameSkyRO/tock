@@ -4190,6 +4190,7 @@ pub enum Slew {
     Fast = 1,
 }
 
+#[derive(Clone, Copy)]
 pub struct Config {
     pub function: Function,
     pub pull: Pull,

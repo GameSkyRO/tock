@@ -17,7 +17,9 @@ pub mod iocon;
 pub mod pint;
 // pub mod rtc;
 // pub mod adc0;
+pub mod flexcomm;
 pub mod syscon;
+pub mod uart;
 
 extern "C" {
     fn _estack();

@@ -11,13 +11,17 @@ use capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm;
 use components::led::LedsComponent;
 use kernel::component::Component;
 use kernel::hil::led::LedLow;
+use kernel::hil::uart::{Configure, Parameters, Parity, StopBits, Width};
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::process::ProcessArray;
 use kernel::scheduler::round_robin::RoundRobinSched;
-use kernel::{capabilities, create_capability, static_init};
+use kernel::{capabilities, create_capability, debug, static_init};
 use lpc55s6x::chip::{Lpc55s69, Lpc55s69DefaultPeripheral};
-use lpc55s6x::clocks::Clock;
+use lpc55s6x::clocks::{self, Clock};
+use lpc55s6x::ctimer0::LPCTimer;
+use lpc55s6x::flexcomm;
 use lpc55s6x::gpio::{GpioPin, LPCPin};
+use lpc55s6x::iocon::{Config, Function, Pull, Slew};
 use lpc55s6x::pint::Edge;
 
 #[no_mangle]
@@ -244,9 +248,84 @@ unsafe fn main() -> ! {
 
     const INPUTMUX_SRC: u8 = 41;
 
+    // USART
+    let clock = static_init!(clocks::Clock, clocks::Clock::new());
+    let flexcomm0 = static_init!(flexcomm::Flexcomm, flexcomm::Flexcomm::new_id(0).unwrap());
+
+    let uart = &peripherals.uart;
+
+    uart.set_clocks(clock);
+    uart.set_flexcomm(flexcomm0);
+    uart.setup_deferred_call();
+
+    let uart_pin_config = Config {
+        // Configuration for digital mode, responding to FLEXCOMM0 signals
+        function: Function::Alt1,
+        pull: Pull::None,
+        digital_mode: true,
+        slew: Slew::Standard,
+        invert: false,
+        open_drain: false,
+    };
+
+    peripherals
+        .pins
+        .iocon
+        .configure_pin(LPCPin::P0_29, uart_pin_config);
+    peripherals
+        .pins
+        .iocon
+        .configure_pin(LPCPin::P0_30, uart_pin_config);
+
     peripherals.pins.inputmux.set_pintsel(0, INPUTMUX_SRC);
 
     peripherals.pins.pint.configure_interrupt(0, Edge::Rising);
+
+    let params = Parameters {
+        // USART initial configuration, using default settings
+        baud_rate: 9600,
+        width: Width::Eight,
+        stop_bits: StopBits::One,
+        parity: Parity::None,
+        hw_flow_control: false,
+    };
+    uart.configure(params).unwrap();
+
+    let uart_mux = components::console::UartMuxComponent::new(uart, 9600)
+        .finalize(components::uart_mux_component_static!());
+
+    // Console
+    let console = components::console::ConsoleComponent::new(
+        board_kernel,
+        capsules_core::console::DRIVER_NUM,
+        uart_mux,
+    )
+    .finalize(components::console_component_static!());
+
+    // Process console
+    components::debug_writer::DebugWriterComponent::new(
+        uart_mux,
+        create_capability!(capabilities::SetDebugWriterCapability),
+    )
+    .finalize(components::debug_writer_component_static!());
+
+    let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
+        .finalize(components::process_printer_text_component_static!());
+    PROCESS_PRINTER = Some(process_printer);
+
+    let process_console = components::process_console::ProcessConsoleComponent::new(
+        board_kernel,
+        uart_mux,
+        mux_alarm,
+        process_printer,
+        None,
+    )
+    .finalize(components::process_console_component_static!(
+        LPCTimer<'static>
+    ));
+    // let _ = process_console.start();
+
+    debug!("Tock");
 
     // These symbols are defined in the linker script.
     extern "C" {
